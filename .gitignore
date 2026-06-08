@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+.pybaseball/
+.env
+*.egg-info/
+.DS_Store
