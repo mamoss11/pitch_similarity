@@ -7,6 +7,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
+from datetime import date
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -15,7 +16,7 @@ from config import (
     STATCAST_FIRST_YEAR, STATCAST_LAST_YEAR,
     PITCH_TYPE_NAMES, TOP_N_COMPS,
 )
-from data_fetcher import load_all_profiles, load_all_era, merge_era
+from data_fetcher import load_all_profiles, load_all_era, merge_era, fetch_season_profiles, fetch_era_data
 from similarity import normalize_features, get_comps
 from era_model import predict_era, batch_predict
 
@@ -27,7 +28,7 @@ st.set_page_config(
 
 # ── Data loading (cached) ─────────────────────────────────────
 
-@st.cache_data(show_spinner="Loading pitch profiles...")
+@st.cache_data(show_spinner="Loading pitch profiles...", ttl=24 * 3600)
 def _load_profiles() -> pd.DataFrame:
     seasons  = list(range(STATCAST_FIRST_YEAR, STATCAST_LAST_YEAR + 1))
     profiles = load_all_profiles(seasons, cached_only=True)
@@ -61,6 +62,19 @@ with st.sidebar:
     )
     top_n = st.slider("Top N comps", min_value=3, max_value=25, value=TOP_N_COMPS)
     same_hand = st.checkbox("Same handedness only", value=False)
+
+    st.divider()
+
+    curr_year = date.today().year
+    if st.button(f"Refresh {curr_year} Data", help="Re-fetch current season profiles and ERA from Statcast/FanGraphs"):
+        with st.spinner(f"Fetching {curr_year} data (this takes a few minutes)..."):
+            fetch_season_profiles(curr_year, force=True)
+            fetch_era_data(curr_year, force=True)
+            _load_profiles.clear()
+            _normalize.clear()
+            _batch_predict.clear()
+        st.success(f"{curr_year} data refreshed.")
+        st.rerun()
 
     st.divider()
     st.caption(

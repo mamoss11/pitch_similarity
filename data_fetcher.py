@@ -6,7 +6,9 @@
 #  ERA data pulled separately from FanGraphs via pybaseball.
 # ─────────────────────────────────────────────────────────────
 import os
+import time
 import warnings
+from datetime import date
 import numpy as np
 import pandas as pd
 from pybaseball import statcast, pitching_stats_bref, cache
@@ -31,8 +33,12 @@ _STATCAST_COLS = [
 # ── Season date ranges ────────────────────────────────────────
 
 def _months_for_year(year: int) -> list:
-    """Return (start, end) date strings covering the full regular season."""
-    return [
+    """Return (start, end) date strings covering the full regular season.
+
+    For the current year, drops month windows that haven't started yet so we
+    don't make empty API calls for future dates.
+    """
+    months = [
         (f"{year}-03-20", f"{year}-03-31"),  # opening week (some years)
         (f"{year}-04-01", f"{year}-04-30"),
         (f"{year}-05-01", f"{year}-05-31"),
@@ -42,6 +48,10 @@ def _months_for_year(year: int) -> list:
         (f"{year}-09-01", f"{year}-09-30"),
         (f"{year}-10-01", f"{year}-10-05"),  # early October games
     ]
+    if year == date.today().year:
+        today_str = date.today().strftime("%Y-%m-%d")
+        months = [(s, e) for s, e in months if s <= today_str]
+    return months
 
 
 # ── Raw → aggregated profiles ─────────────────────────────────
@@ -144,19 +154,34 @@ def _fmt_name(name: str) -> str:
 
 # ── Season fetch / cache ──────────────────────────────────────
 
+_CACHE_MAX_AGE_SECONDS = 24 * 3600  # auto-refresh current season after 24 h
+
+
+def _cache_is_stale(path: str) -> bool:
+    """Return True if the file is older than _CACHE_MAX_AGE_SECONDS."""
+    return (time.time() - os.path.getmtime(path)) > _CACHE_MAX_AGE_SECONDS
+
+
 def fetch_season_profiles(year: int, force: bool = False) -> pd.DataFrame:
     """
     Load pitcher×pitch_type profiles for a season.
     Pulls from Statcast and caches to data/profiles_{year}.csv on first run.
-    Subsequent runs load from cache instantly.
+    For the current season, the cache is automatically refreshed if it is
+    older than 24 hours so new pitchers and updated metrics stay current.
     """
     os.makedirs(DATA_DIR, exist_ok=True)
     path = os.path.join(DATA_DIR, f"profiles_{year}.csv")
 
-    if os.path.exists(path) and not force:
-        df = pd.read_csv(path)
-        print(f"  [{year}] Loaded {len(df)} profiles from cache.")
-        return df
+    is_current_year = (year == date.today().year)
+    cache_exists = os.path.exists(path)
+
+    if cache_exists and not force:
+        if is_current_year and _cache_is_stale(path):
+            print(f"  [{year}] Cache is >24 h old — refreshing current season...")
+        else:
+            df = pd.read_csv(path)
+            print(f"  [{year}] Loaded {len(df)} profiles from cache.")
+            return df
 
     print(f"  [{year}] Fetching Statcast data (this takes a few minutes)...")
     chunks = []
@@ -183,7 +208,7 @@ def fetch_season_profiles(year: int, force: bool = False) -> pd.DataFrame:
         return pd.DataFrame()
 
     profiles.to_csv(path, index=False)
-    print(f"  [{year}] Saved {len(profiles)} profiles → {path}")
+    print(f"  [{year}] Saved {len(profiles)} profiles -> {path}")
     return profiles
 
 
@@ -195,8 +220,14 @@ def fetch_era_data(year: int, force: bool = False) -> pd.DataFrame:
     os.makedirs(DATA_DIR, exist_ok=True)
     path = os.path.join(DATA_DIR, f"era_{year}.csv")
 
-    if os.path.exists(path) and not force:
-        return pd.read_csv(path)
+    is_current_year = (year == date.today().year)
+    cache_exists = os.path.exists(path)
+
+    if cache_exists and not force:
+        if is_current_year and _cache_is_stale(path):
+            print(f"  [{year}] ERA cache is >24 h old — refreshing...")
+        else:
+            return pd.read_csv(path)
 
     print(f"  [{year}] Fetching ERA data from Baseball Reference...")
     try:
@@ -209,7 +240,7 @@ def fetch_era_data(year: int, force: bool = False) -> pd.DataFrame:
         era_df = era_df.sort_values("IP", ascending=False).drop_duplicates("pitcher_name")
         era_df["year"] = year
         era_df.to_csv(path, index=False)
-        print(f"  [{year}] Saved {len(era_df)} ERA rows → {path}")
+        print(f"  [{year}] Saved {len(era_df)} ERA rows -> {path}")
         return era_df
     except Exception as exc:
         print(f"  [{year}] WARNING: Could not fetch ERA — {exc}")
