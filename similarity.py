@@ -15,7 +15,7 @@ _Z_COLS = [f"z_{f}" for f in PITCH_FEATURES]
 
 # Display columns included in comp output
 _DISPLAY_COLS = [
-    "pitcher_id", "pitcher_name", "throws", "year", "pitch_type",
+    "pitcher_id", "pitcher_name", "throws", "year", "level", "pitch_type",
     "n_pitches", "usage_pct", "velo", "ivb", "hb", "extension",
     "release_height", "release_side", "spin_rate",
 ]

@@ -6,6 +6,9 @@
 STATCAST_FIRST_YEAR = 2015
 STATCAST_LAST_YEAR  = 2026
 
+# Baseball Savant started tracking Triple-A Statcast in 2023
+MILB_FIRST_YEAR = 2023
+
 # ── Similarity settings ──────────────────────────────────────
 MIN_PITCHES  = 20    # minimum pitches thrown to include a pitch type
 TOP_N_COMPS  = 10    # default number of comps to return

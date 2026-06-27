@@ -16,7 +16,8 @@ from datetime import date
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from data_fetcher import fetch_season_profiles, fetch_era_data
+from config import MILB_FIRST_YEAR
+from data_fetcher import fetch_season_profiles, fetch_era_data, fetch_milb_season_profiles
 
 
 def main():
@@ -24,6 +25,10 @@ def main():
     parser.add_argument(
         "--year", type=int, default=None,
         help="Season to refresh (default: current year)",
+    )
+    parser.add_argument(
+        "--no-milb", action="store_true",
+        help="Skip Triple-A data refresh",
     )
     args = parser.parse_args()
 
@@ -39,10 +44,15 @@ def main():
     print("-" * 40)
 
     profiles = fetch_season_profiles(year, force=True)
-    print(f"Profiles: {len(profiles)} pitcher x pitch-type rows cached.")
+    print(f"MLB profiles: {len(profiles)} pitcher x pitch-type rows cached.")
 
     era = fetch_era_data(year, force=True)
     print(f"ERA data: {len(era)} pitcher rows cached.")
+
+    if not args.no_milb and year >= MILB_FIRST_YEAR:
+        print()
+        milb = fetch_milb_season_profiles(year, force=True)
+        print(f"AAA profiles: {len(milb)} pitcher x pitch-type rows cached.")
 
     print(f"\nDone. Reload the Streamlit app to see updated data.")
 

@@ -13,10 +13,14 @@ import pandas as pd
 import streamlit as st
 
 from config import (
-    STATCAST_FIRST_YEAR, STATCAST_LAST_YEAR,
+    STATCAST_FIRST_YEAR, STATCAST_LAST_YEAR, MILB_FIRST_YEAR,
     PITCH_TYPE_NAMES, TOP_N_COMPS,
 )
-from data_fetcher import load_all_profiles, load_all_era, merge_era, fetch_season_profiles, fetch_era_data
+from data_fetcher import (
+    load_all_profiles, load_all_era, merge_era,
+    fetch_season_profiles, fetch_era_data,
+    load_milb_profiles, fetch_milb_season_profiles,
+)
 from similarity import normalize_features, get_comps
 from era_model import predict_era, batch_predict
 
@@ -50,6 +54,12 @@ def _batch_predict(profiles_hash: int, _profiles: pd.DataFrame, year: int, top_n
     return batch_predict(_profiles, year, top_n=top_n, same_hand_only=same_hand)
 
 
+@st.cache_data(show_spinner="Loading AAA profiles...", ttl=24 * 3600)
+def _load_milb_profiles() -> pd.DataFrame:
+    seasons = list(range(MILB_FIRST_YEAR, STATCAST_LAST_YEAR + 1))
+    return load_milb_profiles(seasons, cached_only=True)
+
+
 # ── Sidebar ───────────────────────────────────────────────────
 
 with st.sidebar:
@@ -59,6 +69,12 @@ with st.sidebar:
         "Season",
         options=list(range(STATCAST_LAST_YEAR, STATCAST_FIRST_YEAR - 1, -1)),
         index=0,
+    )
+    league = st.radio(
+        "League",
+        options=["MLB", "AAA", "Both"],
+        index=0,
+        help="AAA data available from 2023 onward. Comps always span both leagues.",
     )
     top_n = st.slider("Top N comps", min_value=3, max_value=25, value=TOP_N_COMPS)
     same_hand = st.checkbox("Same handedness only", value=False)
@@ -70,7 +86,10 @@ with st.sidebar:
         with st.spinner(f"Fetching {curr_year} data (this takes a few minutes)..."):
             fetch_season_profiles(curr_year, force=True)
             fetch_era_data(curr_year, force=True)
+            if curr_year >= MILB_FIRST_YEAR:
+                fetch_milb_season_profiles(curr_year, force=True)
             _load_profiles.clear()
+            _load_milb_profiles.clear()
             _normalize.clear()
             _batch_predict.clear()
         st.success(f"{curr_year} data refreshed.")
@@ -96,7 +115,16 @@ if profiles_raw.empty:
     st.warning("No profiles loaded. Run `python main.py --fetch-all` to build the cache.")
     st.stop()
 
-profiles_norm = _normalize(id(profiles_raw), profiles_raw)
+# Load AAA profiles when requested
+include_aaa = (league in ("AAA", "Both")) and (year >= MILB_FIRST_YEAR)
+milb_raw = _load_milb_profiles() if include_aaa else pd.DataFrame()
+
+if include_aaa and not milb_raw.empty:
+    combined_raw = pd.concat([profiles_raw, milb_raw], ignore_index=True)
+else:
+    combined_raw = profiles_raw
+
+profiles_norm = _normalize(id(profiles_raw) + (id(milb_raw) if include_aaa else 0), combined_raw)
 
 # ── Pitcher search ────────────────────────────────────────────
 
@@ -107,7 +135,19 @@ tab_lookup, tab_board = st.tabs(["🔍 Pitcher Lookup", "🏆 Leaderboard"])
 # ── Pitcher Lookup tab ────────────────────────────────────────
 
 with tab_lookup:
+    # Filter by selected league for the search dropdown
     season_profiles = profiles_norm[profiles_norm["year"] == year]
+    if league == "MLB":
+        season_profiles = season_profiles[season_profiles.get("level", "MLB") == "MLB"] if "level" in season_profiles.columns else season_profiles
+    elif league == "AAA":
+        if year < MILB_FIRST_YEAR:
+            st.warning(f"AAA Statcast data is only available from {MILB_FIRST_YEAR} onward.")
+            st.stop()
+        if milb_raw.empty:
+            st.warning(f"No AAA data cached for {year}. Click 'Refresh {year} Data' in the sidebar.")
+            st.stop()
+        season_profiles = season_profiles[season_profiles["level"] == "AAA"]
+
     if season_profiles.empty:
         st.warning(f"No data for {year}. Run `python main.py --fetch {year}` to fetch this season.")
     else:
@@ -225,7 +265,7 @@ with tab_lookup:
                                 lambda x: PITCH_TYPE_NAMES.get(x, x)
                             )
 
-                            show_cols = ["pitcher_name", "year", "similarity", "velo", "ivb", "hb",
+                            show_cols = ["pitcher_name", "year", "level", "similarity", "velo", "ivb", "hb",
                                          "extension", "release_height", "release_side", "spin_rate"]
                             if "era" in comp_display.columns:
                                 show_cols.append("era")
@@ -234,6 +274,7 @@ with tab_lookup:
                             comp_display = comp_display[show_cols].rename(columns={
                                 "pitcher_name":   "Pitcher",
                                 "year":           "Year",
+                                "level":          "Lg",
                                 "similarity":     "Similarity",
                                 "velo":           "Velo",
                                 "ivb":            "IVB (in)",
@@ -276,17 +317,19 @@ with tab_lookup:
 # ── Leaderboard tab ───────────────────────────────────────────
 
 with tab_board:
-    st.subheader(f"{year} Predicted ERA Leaderboard")
+    st.subheader(f"{year} Predicted ERA Leaderboard (MLB)")
 
-    lb = _batch_predict(id(profiles_norm), profiles_norm, year, top_n, same_hand)
+    # Leaderboard always uses MLB-only profiles for ERA prediction
+    mlb_norm = profiles_norm[profiles_norm["level"] == "MLB"] if "level" in profiles_norm.columns else profiles_norm
+    lb = _batch_predict(id(mlb_norm), mlb_norm, year, top_n, same_hand)
 
     if lb.empty:
         st.warning("No leaderboard data available.")
     else:
         # Join actual ERA
-        if "era" in profiles_norm.columns:
+        if "era" in mlb_norm.columns:
             actual_era = (
-                profiles_norm[profiles_norm["year"] == year][["pitcher_id", "era"]]
+                mlb_norm[mlb_norm["year"] == year][["pitcher_id", "era"]]
                 .dropna(subset=["era"])
                 .drop_duplicates(subset=["pitcher_id"])
             )

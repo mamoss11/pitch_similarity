@@ -5,19 +5,21 @@
 #  aggregates to pitcher × pitch_type profiles, and caches to CSV.
 #  ERA data pulled separately from FanGraphs via pybaseball.
 # ─────────────────────────────────────────────────────────────
+import io
 import os
 import time
 import warnings
 from datetime import date
 import numpy as np
 import pandas as pd
+import requests
 from pybaseball import statcast, pitching_stats_bref, cache
 
 cache.enable()
 warnings.filterwarnings("ignore")
 
 from config import (
-    STATCAST_FIRST_YEAR, STATCAST_LAST_YEAR,
+    STATCAST_FIRST_YEAR, STATCAST_LAST_YEAR, MILB_FIRST_YEAR,
     MIN_PITCHES, DATA_DIR, PITCH_FEATURES, EXCLUDE_PITCH_TYPES,
 )
 
@@ -180,6 +182,8 @@ def fetch_season_profiles(year: int, force: bool = False) -> pd.DataFrame:
             print(f"  [{year}] Cache is >24 h old — refreshing current season...")
         else:
             df = pd.read_csv(path)
+            if "level" not in df.columns:
+                df["level"] = "MLB"
             print(f"  [{year}] Loaded {len(df)} profiles from cache.")
             return df
 
@@ -207,8 +211,97 @@ def fetch_season_profiles(year: int, force: bool = False) -> pd.DataFrame:
         print(f"  [{year}] Aggregation returned no profiles.")
         return pd.DataFrame()
 
+    profiles["level"] = "MLB"
     profiles.to_csv(path, index=False)
     print(f"  [{year}] Saved {len(profiles)} profiles -> {path}")
+    return profiles
+
+
+# ── Triple-A (MiLB) fetch / cache ────────────────────────────
+
+# Baseball Savant has tracked affiliated minor league Statcast since 2023.
+# The hfGT value for Triple-A is 'A' (Affiliated); adjust if Savant changes it.
+_SAVANT_CSV_URL = "https://baseballsavant.mlb.com/statcast_search/csv"
+_AAA_GAME_TYPE  = "A"
+
+
+def _fetch_milb_chunk(start: str, end: str) -> pd.DataFrame:
+    """Fetch Triple-A Statcast pitch data for a date range via Baseball Savant."""
+    params = {
+        "all":           "true",
+        "type":          "details",
+        "player_type":   "pitcher",
+        "game_date_gt":  start,
+        "game_date_lt":  end,
+        "hfGT":          f"{_AAA_GAME_TYPE}|",
+        "min_pitches":   "0",
+        "min_results":   "0",
+        "group_by":      "name",
+        "sort_col":      "pitches",
+        "sort_order":    "desc",
+        "min_abs":       "0",
+    }
+    try:
+        resp = requests.get(_SAVANT_CSV_URL, params=params, timeout=120)
+        resp.raise_for_status()
+        text = resp.text.strip()
+        if not text or text.lower().startswith("error") or text.lower().startswith("<!"):
+            return pd.DataFrame()
+        return pd.read_csv(io.StringIO(text), low_memory=False)
+    except Exception as exc:
+        print(f"    WARNING — MiLB fetch error: {exc}")
+        return pd.DataFrame()
+
+
+def fetch_milb_season_profiles(year: int, force: bool = False) -> pd.DataFrame:
+    """
+    Load Triple-A pitcher×pitch_type profiles for a season.
+    Cached to data/profiles_aaa_{year}.csv. Auto-refreshes for current year
+    if the cache is older than 24 hours.
+    """
+    if year < MILB_FIRST_YEAR:
+        return pd.DataFrame()
+
+    os.makedirs(DATA_DIR, exist_ok=True)
+    path = os.path.join(DATA_DIR, f"profiles_aaa_{year}.csv")
+
+    is_current_year = (year == date.today().year)
+    cache_exists    = os.path.exists(path)
+
+    if cache_exists and not force:
+        if is_current_year and _cache_is_stale(path):
+            print(f"  [AAA {year}] Cache is >24 h old — refreshing...")
+        else:
+            df = pd.read_csv(path)
+            if "level" not in df.columns:
+                df["level"] = "AAA"
+            print(f"  [AAA {year}] Loaded {len(df)} profiles from cache.")
+            return df
+
+    print(f"  [AAA {year}] Fetching Triple-A Statcast data...")
+    chunks = []
+    for start, end in _months_for_year(year):
+        df = _fetch_milb_chunk(start, end)
+        if df is not None and not df.empty:
+            chunks.append(df)
+            print(f"    {start} to {end}: {len(df):,} pitches")
+        else:
+            print(f"    {start} to {end}: no data")
+
+    if not chunks:
+        print(f"  [AAA {year}] No data retrieved.")
+        return pd.DataFrame()
+
+    raw      = pd.concat(chunks, ignore_index=True)
+    profiles = _aggregate_raw(raw, year)
+
+    if profiles.empty:
+        print(f"  [AAA {year}] Aggregation returned no profiles.")
+        return pd.DataFrame()
+
+    profiles["level"] = "AAA"
+    profiles.to_csv(path, index=False)
+    print(f"  [AAA {year}] Saved {len(profiles)} profiles -> {path}")
     return profiles
 
 
@@ -249,14 +342,19 @@ def fetch_era_data(year: int, force: bool = False) -> pd.DataFrame:
 
 # ── Multi-season loaders ──────────────────────────────────────
 
-def load_all_profiles(seasons=None, force: bool = False, cached_only: bool = False) -> pd.DataFrame:
+def load_all_profiles(
+    seasons=None,
+    force: bool = False,
+    cached_only: bool = False,
+    include_milb: bool = False,
+) -> pd.DataFrame:
     """
     Load and concatenate profiles for all (or specified) seasons.
 
     Parameters
     ----------
-    cached_only : if True, only load seasons that already have a cache file.
-                  Never triggers a Statcast fetch. Use for interactive lookups.
+    cached_only  : only load seasons that already have a cache file.
+    include_milb : also load Triple-A profiles (2023+) and merge with MLB.
     """
     if seasons is None:
         seasons = range(STATCAST_FIRST_YEAR, STATCAST_LAST_YEAR + 1)
@@ -266,6 +364,34 @@ def load_all_profiles(seasons=None, force: bool = False, cached_only: bool = Fal
         if cached_only and not os.path.exists(path):
             continue
         df = fetch_season_profiles(year, force=force)
+        if not df.empty:
+            dfs.append(df)
+
+    if include_milb:
+        milb_seasons = [y for y in seasons if y >= MILB_FIRST_YEAR]
+        for year in milb_seasons:
+            path = os.path.join(DATA_DIR, f"profiles_aaa_{year}.csv")
+            if cached_only and not os.path.exists(path):
+                continue
+            df = fetch_milb_season_profiles(year, force=force)
+            if not df.empty:
+                dfs.append(df)
+
+    if not dfs:
+        return pd.DataFrame()
+    return pd.concat(dfs, ignore_index=True)
+
+
+def load_milb_profiles(seasons=None, cached_only: bool = False) -> pd.DataFrame:
+    """Load and concatenate Triple-A profiles for all (or specified) seasons."""
+    if seasons is None:
+        seasons = range(MILB_FIRST_YEAR, STATCAST_LAST_YEAR + 1)
+    dfs = []
+    for year in seasons:
+        path = os.path.join(DATA_DIR, f"profiles_aaa_{year}.csv")
+        if cached_only and not os.path.exists(path):
+            continue
+        df = fetch_milb_season_profiles(year)
         if not df.empty:
             dfs.append(df)
     if not dfs:
