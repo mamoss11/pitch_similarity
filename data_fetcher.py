@@ -220,34 +220,53 @@ def fetch_season_profiles(year: int, force: bool = False) -> pd.DataFrame:
 # ── Triple-A (MiLB) fetch / cache ────────────────────────────
 
 # Baseball Savant has tracked affiliated minor league Statcast since 2023.
-# The hfGT value for Triple-A is 'A' (Affiliated); adjust if Savant changes it.
-_SAVANT_CSV_URL = "https://baseballsavant.mlb.com/statcast_search/csv"
-_AAA_GAME_TYPE  = "A"
+# Use minors=true on the standard statcast_search endpoint to get MiLB data,
+# then filter to Triple-A teams in Python (the API has no reliable level filter).
+# Use 3-day chunks to stay under Baseball Savant's 25k-row-per-request cap.
+_SAVANT_CSV_URL   = "https://baseballsavant.mlb.com/statcast_search/csv"
+# Triple-A team abbreviations as used by Baseball Savant (from MLB Stats API
+# sport_id=11, verified against live data). Update if franchises relocate.
+_AAA_TEAMS = {
+    "ABQ", "BUF", "CLT", "COL", "DUR", "ELP", "GWN", "IND", "IOW",
+    "JAX", "LHV", "LOU", "LV",  "MEM", "NAS", "NOR", "OKC", "OMA",
+    "RNO", "ROC", "RR",  "SAC", "SL",  "STP", "SUG", "SWB", "SYR",
+    "TAC", "TOL", "WOR",
+}
 
 
 def _fetch_milb_chunk(start: str, end: str) -> pd.DataFrame:
-    """Fetch Triple-A Statcast pitch data for a date range via Baseball Savant."""
+    """
+    Fetch all affiliated minor league Statcast data for a 3-day window,
+    then filter rows to Triple-A teams only.
+    """
     params = {
-        "all":           "true",
-        "type":          "details",
-        "player_type":   "pitcher",
-        "game_date_gt":  start,
-        "game_date_lt":  end,
-        "hfGT":          f"{_AAA_GAME_TYPE}|",
-        "min_pitches":   "0",
-        "min_results":   "0",
-        "group_by":      "name",
-        "sort_col":      "pitches",
-        "sort_order":    "desc",
-        "min_abs":       "0",
+        "all":          "true",
+        "type":         "details",
+        "player_type":  "pitcher",
+        "game_date_gt": start,
+        "game_date_lt": end,
+        "minors":       "true",
+        "min_pitches":  "0",
+        "min_results":  "0",
+        "group_by":     "name",
+        "sort_col":     "pitches",
+        "sort_order":   "desc",
+        "min_abs":      "0",
     }
     try:
         resp = requests.get(_SAVANT_CSV_URL, params=params, timeout=120)
         resp.raise_for_status()
-        text = resp.text.strip()
+        text = resp.content.decode("utf-8-sig").strip()
         if not text or text.lower().startswith("error") or text.lower().startswith("<!"):
             return pd.DataFrame()
-        return pd.read_csv(io.StringIO(text), low_memory=False)
+        df = pd.read_csv(io.StringIO(text), low_memory=False)
+        if df.empty:
+            return df
+        # Filter to Triple-A teams only
+        if "home_team" in df.columns:
+            aaa_mask = df["home_team"].isin(_AAA_TEAMS) | df["away_team"].isin(_AAA_TEAMS)
+            df = df[aaa_mask]
+        return df
     except Exception as exc:
         print(f"    WARNING — MiLB fetch error: {exc}")
         return pd.DataFrame()
@@ -278,9 +297,10 @@ def fetch_milb_season_profiles(year: int, force: bool = False) -> pd.DataFrame:
             print(f"  [AAA {year}] Loaded {len(df)} profiles from cache.")
             return df
 
-    print(f"  [AAA {year}] Fetching Triple-A Statcast data...")
+    month_chunks = _months_for_year(year)
+    print(f"  [AAA {year}] Fetching Triple-A Statcast data ({len(month_chunks)} months)...")
     chunks = []
-    for start, end in _months_for_year(year):
+    for start, end in month_chunks:
         df = _fetch_milb_chunk(start, end)
         if df is not None and not df.empty:
             chunks.append(df)
