@@ -21,13 +21,28 @@ _DISPLAY_COLS = [
 ]
 
 
+# Horizontal features where LHP values are abs()-normalized before z-scoring.
+# The raw data pipeline already sign-flips LHP so arm-side = positive; abs()
+# here is a second-pass guarantee: it ensures that glove-side LHP pitches
+# (negative after the flip) are treated by movement magnitude only, making the
+# z-score feature space directly comparable across handedness when the
+# "Same handedness only" toggle is OFF.
+_ABS_FOR_LHP = {"hb", "release_side"}
+
+
 def normalize_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Z-score normalize each PITCH_FEATURES column within each pitch type.
     Adds z_{feature} columns to the DataFrame.
+
+    For horizontal features (hb, release_side), LHP values are converted to
+    their absolute magnitude before z-scoring so that cross-handedness comps
+    compare movement magnitude rather than raw sign convention.
     Missing feature values are filled with the group mean before normalizing.
     """
     result = df.copy()
+
+    lhp_idx = df.index[df["throws"] == "L"] if "throws" in df.columns else pd.Index([])
 
     for pt, grp in df.groupby("pitch_type"):
         idx = grp.index
@@ -36,7 +51,15 @@ def normalize_features(df: pd.DataFrame) -> pd.DataFrame:
                 result.loc[idx, f"z_{col}"] = 0.0
                 continue
 
-            vals   = grp[col].copy()
+            vals = grp[col].copy()
+
+            # Abs-normalize horizontal features for LHP so the z-score space is
+            # movement-magnitude based — enables effective cross-handedness comps.
+            if col in _ABS_FOR_LHP and len(lhp_idx) > 0:
+                lhp_in_grp = grp.index.intersection(lhp_idx)
+                if len(lhp_in_grp) > 0:
+                    vals.loc[lhp_in_grp] = vals.loc[lhp_in_grp].abs()
+
             # Fill NaN with group mean (handles sparse columns like spin_axis pre-2017)
             g_mean = vals.mean()
             vals   = vals.fillna(g_mean) if not np.isnan(g_mean) else vals.fillna(0.0)
