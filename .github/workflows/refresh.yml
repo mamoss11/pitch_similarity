@@ -1,0 +1,38 @@
+name: Refresh Current Season Data
+
+on:
+  schedule:
+    - cron: '0 10 * * *'  # 10 AM UTC = 6 AM ET daily
+  workflow_dispatch:       # allow manual trigger from GitHub UI
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Refresh current season data
+        run: python refresh.py
+
+      - name: Commit and push updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/profiles_*.csv data/era_*.csv
+          if git diff --cached --quiet; then
+            echo "No data changes — skipping commit."
+          else
+            git commit -m "Auto-refresh: update current season data [skip ci]"
+            git push
+          fi
