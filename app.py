@@ -265,7 +265,7 @@ with tab_lookup:
                                 lambda x: PITCH_TYPE_NAMES.get(x, x)
                             )
 
-                            show_cols = ["pitcher_name", "year", "level", "similarity", "velo", "ivb", "hb",
+                            show_cols = ["pitcher_name", "throws", "year", "level", "similarity", "velo", "ivb", "hb",
                                          "extension", "release_height", "release_side", "spin_rate"]
                             if "era" in comp_display.columns:
                                 show_cols.append("era")
@@ -273,6 +273,7 @@ with tab_lookup:
 
                             comp_display = comp_display[show_cols].rename(columns={
                                 "pitcher_name":   "Pitcher",
+                                "throws":         "Hand",
                                 "year":           "Year",
                                 "level":          "Lg",
                                 "similarity":     "Similarity",
