@@ -10,7 +10,7 @@ STATCAST_LAST_YEAR  = 2026
 MILB_FIRST_YEAR = 2023
 
 # ── Similarity settings ──────────────────────────────────────
-MIN_PITCHES  = 20    # minimum pitches thrown to include a pitch type
+MIN_PITCHES  = 10    # minimum pitches thrown to include a pitch type
 TOP_N_COMPS  = 10    # default number of comps to return
 
 # ── Feature columns used for similarity ──────────────────────
